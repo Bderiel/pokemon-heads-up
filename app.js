@@ -8,7 +8,7 @@ const APP_BASE_URL =
   typeof import.meta.env.BASE_URL === "string"
     ? import.meta.env.BASE_URL
     : "./";
-const MENU_MUSIC_SRC = `${APP_BASE_URL}assets/menu.mp3`;
+const MENU_MUSIC_SRC_CANDIDATES = [`${APP_BASE_URL}assets/menu.mp3`, `${APP_BASE_URL}public/assets/menu.mp3`];
 const MENU_MUSIC_FALLBACK_NOTES = [261.63, 329.63, 392.0, 329.63, 440.0, 392.0];
 const BASE_MOTION_TRIGGER_UP_DELTA = 12;
 const BASE_MOTION_TRIGGER_DOWN_DELTA = 10;
@@ -61,6 +61,7 @@ const appState = {
     unlocked: false,
     wasUnlocked: false,
     menuTrack: null,
+    menuTrackSrcIndex: 0,
     menuTrackFailed: false,
     menuFallbackTimer: null,
     menuFallbackStep: 0,
@@ -904,7 +905,8 @@ function getMenuTrack() {
     return appState.audio.menuTrack;
   }
 
-  const track = new Audio(MENU_MUSIC_SRC);
+  const src = MENU_MUSIC_SRC_CANDIDATES[appState.audio.menuTrackSrcIndex] || MENU_MUSIC_SRC_CANDIDATES[0];
+  const track = new Audio(src);
   track.loop = true;
   track.preload = "auto";
   track.volume = 0.4;
@@ -922,6 +924,15 @@ function getMenuTrack() {
     applyRestoreTime();
   }
   track.addEventListener("error", () => {
+    const nextIndex = appState.audio.menuTrackSrcIndex + 1;
+    if (nextIndex < MENU_MUSIC_SRC_CANDIDATES.length) {
+      appState.audio.menuTrackSrcIndex = nextIndex;
+      appState.audio.menuTrack = null;
+      if (appState.settings.menuMusicEnabled && isMenuScreen(appState.currentScreen)) {
+        startMenuMusic();
+      }
+      return;
+    }
     appState.audio.menuTrackFailed = true;
     appState.audio.menuTrack = null;
     if (appState.settings.menuMusicEnabled && isMenuScreen(appState.currentScreen)) {
@@ -956,6 +967,13 @@ function startMenuMusic() {
         typeof error === "object" &&
         (error.name === "NotSupportedError" || String(error.message || "").includes("not supported"));
       if (hasSourceError || notSupported) {
+        const nextIndex = appState.audio.menuTrackSrcIndex + 1;
+        if (nextIndex < MENU_MUSIC_SRC_CANDIDATES.length) {
+          appState.audio.menuTrackSrcIndex = nextIndex;
+          appState.audio.menuTrack = null;
+          startMenuMusic();
+          return;
+        }
         appState.audio.menuTrackFailed = true;
         appState.audio.menuTrack = null;
         startMenuFallbackMusic();
