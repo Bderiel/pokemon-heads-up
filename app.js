@@ -1,7 +1,14 @@
 import { POKEMON_FALLBACK } from "./data/pokemon-fallback.js";
 
 const STORAGE_KEY = "pokemon_heads_up_state_v1";
-const MENU_MUSIC_SRC = `${import.meta.env.BASE_URL}assets/menu.mp3`;
+const APP_BASE_URL =
+  typeof import.meta !== "undefined" &&
+  import.meta &&
+  import.meta.env &&
+  typeof import.meta.env.BASE_URL === "string"
+    ? import.meta.env.BASE_URL
+    : "./";
+const MENU_MUSIC_SRC = `${APP_BASE_URL}assets/menu.mp3`;
 const MENU_MUSIC_FALLBACK_NOTES = [261.63, 329.63, 392.0, 329.63, 440.0, 392.0];
 const BASE_MOTION_TRIGGER_UP_DELTA = 12;
 const BASE_MOTION_TRIGGER_DOWN_DELTA = 10;
