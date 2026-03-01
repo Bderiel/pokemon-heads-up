@@ -1,0 +1,15 @@
+{
+  "name": "pokemon-heads-up",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --host"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-basic-ssl": "^2.1.0",
+    "vite": "^7.1.5"
+  }
+}

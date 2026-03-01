@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Pokemon Heads Up</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section id="setup-screen" class="screen">
+        <h1>Pokemon Heads Up</h1>
+        <form id="setup-form" novalidate>
+          <label for="player-name">Player Name</label>
+          <input id="player-name" name="playerName" type="text" maxlength="30" autocomplete="off" required />
+
+          <p id="validation-message" class="message error" aria-live="polite"></p>
+          <p id="pokemon-source-status" class="message" aria-live="polite">Loading Pokemon list...</p>
+
+          <div id="pokemon-error" class="error-panel hidden" role="alert">
+            <p>Unable to load any Pokemon list. Retry to continue.</p>
+            <button id="retry-load" type="button">Retry Loading Pokemon</button>
+          </div>
+
+          <button id="start-round" type="submit">Start Round</button>
+          <button id="open-settings" type="button">Settings</button>
+        </form>
+
+        <section class="leaderboard">
+          <div class="leaderboard-header">
+            <h2>Session Leaderboard</h2>
+            <button id="reset-leaderboard" type="button">Reset</button>
+          </div>
+          <ul id="leaderboard-list" class="leaderboard-list"></ul>
+          <p id="leaderboard-empty" class="message">No rounds played yet.</p>
+        </section>
+      </section>
+
+      <section id="settings-screen" class="screen hidden">
+        <h2>Settings</h2>
+        <div class="settings-panel">
+          <label for="round-seconds">Round Time (seconds)</label>
+          <input id="round-seconds" name="roundSeconds" type="number" min="15" max="300" step="1" value="60" required />
+
+          <fieldset id="generation-filter" class="generation-filter">
+            <legend>Generations</legend>
+            <label class="gen-option"><input type="checkbox" name="generation" value="1" checked /> Gen I</label>
+            <label class="gen-option"><input type="checkbox" name="generation" value="2" checked /> Gen II</label>
+            <label class="gen-option"><input type="checkbox" name="generation" value="3" /> Gen III</label>
+            <label class="gen-option"><input type="checkbox" name="generation" value="4" /> Gen IV</label>
+            <label class="gen-option"><input type="checkbox" name="generation" value="5" /> Gen V</label>
+            <label class="gen-option"><input type="checkbox" name="generation" value="6" /> Gen VI</label>
+            <label class="gen-option"><input type="checkbox" name="generation" value="7" /> Gen VII</label>
+            <label class="gen-option"><input type="checkbox" name="generation" value="8" /> Gen VIII</label>
+            <label class="gen-option"><input type="checkbox" name="generation" value="9" /> Gen IX</label>
+          </fieldset>
+
+          <div class="motion-controls">
+            <label class="motion-toggle">
+              <input id="motion-enabled" type="checkbox" checked />
+              Use Heads Up motion controls
+            </label>
+            <label for="motion-sensitivity">Motion Sensitivity</label>
+            <input id="motion-sensitivity" type="range" min="0.5" max="2.0" step="0.1" value="1.0" />
+            <p id="motion-sensitivity-value" class="message">Sensitivity: 1.0x</p>
+            <p id="motion-test-readout" class="message">Motion test: waiting for tilt...</p>
+            <button id="enable-motion" type="button">Enable Motion Access</button>
+            <p id="motion-status" class="message" aria-live="polite">Motion status: pending</p>
+          </div>
+
+          <div class="sound-controls">
+            <label class="motion-toggle">
+              <input id="sfx-enabled" type="checkbox" checked />
+              Sound effects
+            </label>
+            <label class="motion-toggle">
+              <input id="menu-music-enabled" type="checkbox" checked />
+              Main menu music
+            </label>
+            <button id="test-sound" type="button">Test Sound</button>
+            <p id="sound-status" class="message" aria-live="polite">Sound status: idle</p>
+          </div>
+
+          <button id="clear-settings" type="button">Clear Settings</button>
+          <button id="close-settings" type="button">Back</button>
+        </div>
+      </section>
+
+      <section id="countdown-screen" class="screen hidden" aria-live="assertive">
+        <div class="countdown-value" id="countdown-value">5</div>
+      </section>
+
+      <section id="gameplay-screen" class="screen hidden">
+        <header class="hud">
+          <div>
+            <p class="hud-label">Player</p>
+            <p id="hud-player" class="hud-value">-</p>
+          </div>
+          <div>
+            <p class="hud-label">Time</p>
+            <p id="hud-time" class="hud-value">60</p>
+          </div>
+          <div>
+            <p class="hud-label">Score</p>
+            <p id="hud-score" class="hud-value">0</p>
+          </div>
+        </header>
+
+        <article id="pokemon-card" class="pokemon-card" tabindex="0" aria-label="Pokemon card">
+          <img id="pokemon-image" class="pokemon-image hidden" alt="" />
+          <div id="pokemon-image-fallback" class="pokemon-image-fallback">?</div>
+          <p id="pokemon-name">Get Ready</p>
+          <p id="pokemon-generation" class="pokemon-generation">Generation -</p>
+          <p id="pokemon-typing" class="pokemon-typing">Type: -</p>
+        </article>
+
+        <footer class="gesture-hint">
+          <span id="hint-up">Swipe up: Pass</span>
+          <span id="hint-down">Swipe down: Correct (+1)</span>
+        </footer>
+        <button id="end-round-early" type="button">End Round Early</button>
+      </section>
+
+      <section id="result-screen" class="screen hidden">
+        <h2>Round Complete</h2>
+        <p class="result-player" id="result-player"></p>
+        <p class="result-score"><strong id="result-score">0</strong> points</p>
+        <div class="result-actions">
+          <button id="next-player" type="button">Next Player</button>
+          <button id="play-again" type="button">Play Again</button>
+        </div>
+      </section>
+    </main>
+    <aside id="orientation-overlay" class="orientation-overlay hidden" role="alert">
+      <p>Please rotate to portrait mode.</p>
+    </aside>
+
+    <script src="./data/pokemon-fallback.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

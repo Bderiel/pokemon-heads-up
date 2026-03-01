@@ -1,0 +1,406 @@
+:root {
+  color-scheme: light;
+  --bg: #f5f7ff;
+  --panel: #ffffff;
+  --text: #16213a;
+  --muted: #506080;
+  --accent: #e14b4b;
+  --ok: #1e9e5a;
+  --warn: #bb2222;
+  --border: #d9e0ef;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  min-height: 100%;
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  background: radial-gradient(circle at 15% 15%, #ffffff 0%, var(--bg) 50%, #e6edff 100%);
+  color: var(--text);
+}
+
+body.gameplay-active {
+  overflow: hidden;
+  touch-action: none;
+}
+
+.app-shell {
+  width: min(640px, 100%);
+  min-height: 100dvh;
+  margin: 0 auto;
+  padding: calc(env(safe-area-inset-top) + 16px) 16px calc(env(safe-area-inset-bottom) + 16px);
+}
+
+.screen {
+  display: block;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.orientation-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  background: rgba(9, 16, 30, 0.94);
+  color: #ffffff;
+  text-align: center;
+  padding: 24px;
+}
+
+.orientation-overlay p {
+  margin: 0;
+  font-size: clamp(1.2rem, 4vw, 1.7rem);
+  font-weight: 800;
+}
+
+h1,
+h2 {
+  margin: 0 0 12px;
+}
+
+#setup-form,
+.settings-panel,
+.leaderboard,
+#result-screen {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 16px;
+}
+
+#setup-form {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.settings-panel {
+  display: grid;
+  gap: 10px;
+}
+
+label {
+  font-weight: 700;
+}
+
+input,
+button {
+  font: inherit;
+}
+
+input {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  width: 100%;
+}
+
+.generation-filter {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.generation-filter legend {
+  padding: 0 6px;
+  font-weight: 700;
+}
+
+.gen-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.gen-option input {
+  width: auto;
+  margin: 0;
+  transform: scale(1.1);
+}
+
+.motion-controls {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.sound-controls {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.motion-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.motion-toggle input {
+  width: auto;
+  margin: 0;
+}
+
+#enable-motion {
+  background: #244a77;
+}
+
+#clear-settings {
+  background: #4a556f;
+}
+
+#open-settings {
+  background: #2d4f7b;
+}
+
+#close-settings {
+  background: #2d4f7b;
+}
+
+#test-sound {
+  background: #22604a;
+}
+
+button {
+  border: 0;
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+}
+
+button:disabled {
+  opacity: 0.6;
+}
+
+.message {
+  margin: 0;
+  font-size: 0.92rem;
+  color: var(--muted);
+}
+
+.error {
+  color: var(--warn);
+  min-height: 20px;
+}
+
+.error-panel {
+  border: 1px solid #f4b8b8;
+  background: #fff5f5;
+  border-radius: 10px;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.error-panel button {
+  background: #be2626;
+}
+
+.leaderboard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+#reset-leaderboard {
+  padding: 8px 10px;
+  background: #344b73;
+}
+
+.leaderboard-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.leaderboard-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  background: #f8faff;
+}
+
+.leaderboard-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.leaderboard-delete {
+  background: #7a2f3f;
+  padding: 6px 10px;
+  font-size: 0.82rem;
+}
+
+#countdown-screen {
+  min-height: calc(100dvh - 32px);
+  display: grid;
+  place-items: center;
+}
+
+.countdown-value {
+  font-size: clamp(5rem, 20vw, 9rem);
+  font-weight: 900;
+  color: var(--accent);
+}
+
+#gameplay-screen {
+  min-height: calc(100dvh - 32px);
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 14px;
+}
+
+.hud {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  text-align: center;
+}
+
+.hud > div {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px;
+}
+
+.hud-label {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.hud-value {
+  margin: 0;
+  font-size: 1.3rem;
+  font-weight: 900;
+}
+
+.pokemon-card {
+  background: #10203b;
+  color: #fff;
+  border-radius: 20px;
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  text-align: center;
+  padding: 20px;
+  user-select: none;
+  gap: 10px;
+}
+
+.pokemon-card p {
+  margin: 0;
+  font-size: clamp(2rem, 8vw, 4rem);
+  font-weight: 900;
+  line-height: 1.1;
+}
+
+.pokemon-image {
+  width: min(52vw, 220px);
+  height: min(52vw, 220px);
+  object-fit: contain;
+  image-rendering: auto;
+}
+
+.pokemon-image-fallback {
+  width: min(52vw, 220px);
+  height: min(52vw, 220px);
+  border-radius: 50%;
+  border: 3px solid #dce7ff;
+  display: grid;
+  place-items: center;
+  font-size: clamp(2rem, 10vw, 3.4rem);
+  font-weight: 900;
+  background: radial-gradient(circle at 30% 25%, #2f4878 0%, #1f3359 60%, #182a4a 100%);
+}
+
+.pokemon-generation {
+  font-size: clamp(1rem, 3.8vw, 1.2rem) !important;
+  font-weight: 700 !important;
+  color: #c8d8ff;
+}
+
+.pokemon-typing {
+  font-size: clamp(0.95rem, 3.4vw, 1.1rem) !important;
+  font-weight: 700 !important;
+  color: #b6f1d2;
+}
+
+.gesture-hint {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+#end-round-early {
+  background: #5f3247;
+}
+
+#result-screen {
+  display: grid;
+  gap: 10px;
+}
+
+.result-player,
+.result-score {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.result-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+#next-player {
+  background: #334b72;
+}
+
+#play-again {
+  background: var(--ok);
+}
+
+@media (min-width: 720px) {
+  .app-shell {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+
+  #gameplay-screen,
+  #countdown-screen {
+    min-height: 80dvh;
+  }
+}
