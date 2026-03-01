@@ -2,6 +2,7 @@ import { POKEMON_FALLBACK } from "./data/pokemon-fallback.js";
 
 const STORAGE_KEY = "pokemon_heads_up_state_v1";
 const MENU_MUSIC_SRC = `${import.meta.env.BASE_URL}assets/menu.mp3`;
+const MENU_MUSIC_FALLBACK_NOTES = [261.63, 329.63, 392.0, 329.63, 440.0, 392.0];
 const BASE_MOTION_TRIGGER_UP_DELTA = 12;
 const BASE_MOTION_TRIGGER_DOWN_DELTA = 10;
 const BASE_MOTION_NEUTRAL_DELTA = 6;
@@ -53,6 +54,9 @@ const appState = {
     unlocked: false,
     wasUnlocked: false,
     menuTrack: null,
+    menuTrackFailed: false,
+    menuFallbackTimer: null,
+    menuFallbackStep: 0,
     menuRestoreTime: 0,
     resumeMenuOnLoad: false,
     unlockHandler: null
@@ -886,6 +890,9 @@ function playToneSequence(sequence) {
 }
 
 function getMenuTrack() {
+  if (appState.audio.menuTrackFailed) {
+    return null;
+  }
   if (appState.audio.menuTrack) {
     return appState.audio.menuTrack;
   }
@@ -907,6 +914,13 @@ function getMenuTrack() {
     track.addEventListener("loadedmetadata", applyRestoreTime, { once: true });
     applyRestoreTime();
   }
+  track.addEventListener("error", () => {
+    appState.audio.menuTrackFailed = true;
+    appState.audio.menuTrack = null;
+    if (appState.settings.menuMusicEnabled && isMenuScreen(appState.currentScreen)) {
+      startMenuFallbackMusic();
+    }
+  });
   appState.audio.menuTrack = track;
   return track;
 }
@@ -917,14 +931,28 @@ function startMenuMusic() {
   }
 
   const track = getMenuTrack();
+  if (!track) {
+    startMenuFallbackMusic();
+    return;
+  }
   if (!track.paused) {
     return;
   }
 
   const playPromise = track.play();
   if (playPromise && typeof playPromise.catch === "function") {
-    playPromise.catch(() => {
-      // Playback can be blocked until user gesture on Safari/iOS.
+    playPromise.catch((error) => {
+      // If the file is missing or unsupported, switch to generated fallback music.
+      const hasSourceError = Boolean(track.error) || appState.audio.menuTrackFailed;
+      const notSupported =
+        error &&
+        typeof error === "object" &&
+        (error.name === "NotSupportedError" || String(error.message || "").includes("not supported"));
+      if (hasSourceError || notSupported) {
+        appState.audio.menuTrackFailed = true;
+        appState.audio.menuTrack = null;
+        startMenuFallbackMusic();
+      }
     });
   }
   appState.audio.resumeMenuOnLoad = true;
@@ -932,6 +960,7 @@ function startMenuMusic() {
 
 function stopMenuMusic(options = {}) {
   const { resetPosition = true, markPaused = true } = options;
+  stopMenuFallbackMusic();
   const track = appState.audio.menuTrack;
   if (!track) {
     if (markPaused) {
@@ -949,6 +978,55 @@ function stopMenuMusic(options = {}) {
   if (markPaused) {
     appState.audio.resumeMenuOnLoad = false;
   }
+}
+
+function startMenuFallbackMusic() {
+  if (appState.audio.menuFallbackTimer) {
+    return;
+  }
+  const audioContext = getAudioContext();
+  if (!audioContext || audioContext.state !== "running") {
+    return;
+  }
+  appState.audio.menuFallbackStep = 0;
+  playNextMenuFallbackNote();
+  appState.audio.menuFallbackTimer = window.setInterval(playNextMenuFallbackNote, 340);
+}
+
+function stopMenuFallbackMusic() {
+  if (!appState.audio.menuFallbackTimer) {
+    return;
+  }
+  clearInterval(appState.audio.menuFallbackTimer);
+  appState.audio.menuFallbackTimer = null;
+}
+
+function playNextMenuFallbackNote() {
+  const note = MENU_MUSIC_FALLBACK_NOTES[appState.audio.menuFallbackStep % MENU_MUSIC_FALLBACK_NOTES.length];
+  appState.audio.menuFallbackStep += 1;
+  playMenuFallbackNote(note);
+}
+
+function playMenuFallbackNote(freq) {
+  const audioContext = getAudioContext();
+  if (!audioContext || audioContext.state !== "running") {
+    return;
+  }
+
+  const startAt = audioContext.currentTime;
+  const oscillator = audioContext.createOscillator();
+  const gainNode = audioContext.createGain();
+
+  oscillator.type = "triangle";
+  oscillator.frequency.setValueAtTime(freq, startAt);
+  gainNode.gain.setValueAtTime(0.0001, startAt);
+  gainNode.gain.exponentialRampToValueAtTime(0.028, startAt + 0.02);
+  gainNode.gain.exponentialRampToValueAtTime(0.0001, startAt + 0.26);
+
+  oscillator.connect(gainNode);
+  gainNode.connect(audioContext.destination);
+  oscillator.start(startAt);
+  oscillator.stop(startAt + 0.3);
 }
 
 function updateMenuMusicState() {
