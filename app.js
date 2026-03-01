@@ -1,5 +1,7 @@
+import { POKEMON_FALLBACK } from "./data/pokemon-fallback.js";
+
 const STORAGE_KEY = "pokemon_heads_up_state_v1";
-const MENU_MUSIC_SRC = "/dist/assets/menu.mp3";
+const MENU_MUSIC_SRC = `${import.meta.env.BASE_URL}assets/menu.mp3`;
 const BASE_MOTION_TRIGGER_UP_DELTA = 12;
 const BASE_MOTION_TRIGGER_DOWN_DELTA = 10;
 const BASE_MOTION_NEUTRAL_DELTA = 6;
@@ -11,6 +13,7 @@ const MOTION_SENSITIVITY_DEFAULT = 1.0;
 const appState = {
   settings: {
     roundSeconds: 60,
+    targetPoints: 10,
     selectedGenerations: new Set([1, 2]),
     motionEnabled: true,
     motionSensitivity: MOTION_SENSITIVITY_DEFAULT,
@@ -18,13 +21,17 @@ const appState = {
     menuMusicEnabled: true
   },
   session: {
-    leaderboard: []
+    leaderboard: [],
+    turnOrder: [],
+    winnerName: null
   },
   round: {
     playerName: "",
     timeLeft: 60,
     score: 0,
+    totalScore: 0,
     active: false,
+    paused: false,
     deck: [],
     pool: [],
     used: new Set(),
@@ -38,13 +45,16 @@ const appState = {
   swipeLocked: false,
   timerId: null,
   countdownId: null,
+  resumeCountdownId: null,
   pendingPlayAgain: null,
   currentScreen: "setup",
   audio: {
     context: null,
     unlocked: false,
+    wasUnlocked: false,
     menuTrack: null,
-    menuRetryTimer: null,
+    menuRestoreTime: 0,
+    resumeMenuOnLoad: false,
     unlockHandler: null
   },
   motion: {
@@ -52,6 +62,8 @@ const appState = {
     secureContext: false,
     permissionState: "unknown",
     listenerAttached: false,
+    autoRequestArmed: false,
+    autoRequestHandler: null,
     axisChoice: null,
     baselineTilt: null,
     neutralReady: true,
@@ -71,7 +83,11 @@ const dom = {
   openSettingsButton: document.getElementById("open-settings"),
   closeSettingsButton: document.getElementById("close-settings"),
   playerName: document.getElementById("player-name"),
+  addPlayerButton: document.getElementById("add-player"),
+  sessionPlayers: document.getElementById("session-players"),
+  sessionPlayersEmpty: document.getElementById("session-players-empty"),
   roundSeconds: document.getElementById("round-seconds"),
+  targetPoints: document.getElementById("target-points"),
   generationInputs: document.querySelectorAll("input[name='generation']"),
   motionEnabled: document.getElementById("motion-enabled"),
   motionSensitivity: document.getElementById("motion-sensitivity"),
@@ -96,6 +112,12 @@ const dom = {
   hudPlayer: document.getElementById("hud-player"),
   hudTime: document.getElementById("hud-time"),
   hudScore: document.getElementById("hud-score"),
+  hudTotal: document.getElementById("hud-total"),
+  resumeGate: document.getElementById("resume-gate"),
+  resumeMessage: document.getElementById("resume-message"),
+  resumeTouch: document.getElementById("resume-touch"),
+  resumeCountdown: document.getElementById("resume-countdown"),
+  unlockSound: document.getElementById("unlock-sound"),
   endRoundEarly: document.getElementById("end-round-early"),
   pokemonCard: document.getElementById("pokemon-card"),
   pokemonImage: document.getElementById("pokemon-image"),
@@ -107,6 +129,9 @@ const dom = {
   hintDown: document.getElementById("hint-down"),
   resultPlayer: document.getElementById("result-player"),
   resultScore: document.getElementById("result-score"),
+  resultTotalScore: document.getElementById("result-total-score"),
+  resultTargetPoints: document.getElementById("result-target-points"),
+  resultStatus: document.getElementById("result-status"),
   nextPlayer: document.getElementById("next-player"),
   playAgain: document.getElementById("play-again"),
   orientationOverlay: document.getElementById("orientation-overlay")
@@ -122,9 +147,15 @@ function initApp() {
   updateMotionStatusText();
   updateMotionTestReadout();
   updateGameplayHints();
+  updateSoundUnlockPrompt();
   updateOrientationGuard();
+  renderSessionPlayers();
   renderLeaderboard();
   restoreSavedView();
+  void maybeAutoEnableMotion();
+  if (appState.audio.wasUnlocked) {
+    void primeAudio();
+  }
   void initializePokemonPool();
 }
 
@@ -152,7 +183,7 @@ async function loadPokemonPool() {
     return apiPokemon;
   }
 
-  const fallback = buildFallbackPokemon(window.POKEMON_FALLBACK || []);
+  const fallback = buildFallbackPokemon(POKEMON_FALLBACK || []);
   if (fallback.length) {
     appState.sourceMessage = `Using offline list (${fallback.length} Pokemon).`;
     return fallback;
@@ -316,22 +347,26 @@ function attachEventHandlers() {
   dom.setupForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     await primeAudio();
-    const playerName = dom.playerName.value.trim();
+    const playerDraft = dom.playerName.value.trim();
     const roundSeconds = clampRoundSeconds(dom.roundSeconds.value);
     syncGenerationSelectionFromInputs();
     const filteredPool = getFilteredPokemonPool();
 
-    dom.playerName.value = playerName;
+    dom.playerName.value = playerDraft;
     dom.roundSeconds.value = String(roundSeconds);
     appState.settings.roundSeconds = roundSeconds;
     persistGameState();
 
-    if (!playerName) {
-      dom.validationMessage.textContent = "Player name is required.";
-      return;
+    if (playerDraft) {
+      addPlayerToSession(playerDraft);
+      dom.playerName.value = "";
     }
     if (!appState.pokemonPool.length) {
       dom.validationMessage.textContent = "Pokemon list not ready yet.";
+      return;
+    }
+    if (!appState.session.turnOrder.length) {
+      dom.validationMessage.textContent = "Add at least one player to start.";
       return;
     }
     if (!appState.settings.selectedGenerations.size) {
@@ -342,9 +377,24 @@ function attachEventHandlers() {
       dom.validationMessage.textContent = "No Pokemon available for selected generations.";
       return;
     }
+    if (appState.session.winnerName) {
+      const confirmed = window.confirm(
+        `${appState.session.winnerName} already won this game. Start a new game and clear current leaderboard?`
+      );
+      if (!confirmed) {
+        return;
+      }
+      resetLeaderboard();
+    }
     if (appState.settings.motionEnabled) {
       await ensureMotionAccess();
       updateGameplayHints();
+    }
+
+    const playerName = getNextPlayerForStart();
+    if (!playerName) {
+      dom.validationMessage.textContent = "Unable to pick next player.";
+      return;
     }
 
     dom.validationMessage.textContent = "";
@@ -368,6 +418,15 @@ function attachEventHandlers() {
     persistGameState();
   });
 
+  dom.targetPoints.addEventListener("blur", () => {
+    const clamped = clampTargetPoints(dom.targetPoints.value);
+    dom.targetPoints.value = String(clamped);
+    appState.settings.targetPoints = clamped;
+    recalculateWinnerFromTotals();
+    renderLeaderboard();
+    persistGameState();
+  });
+
   dom.generationInputs.forEach((input) => {
     input.addEventListener("change", () => {
       syncGenerationSelectionFromInputs();
@@ -379,9 +438,12 @@ function attachEventHandlers() {
     updateGameplayHints();
     updateMotionTestReadout();
     if (!appState.settings.motionEnabled) {
+      removeAutoMotionRequestListeners();
       appState.motion.neutralReady = true;
       appState.motion.baselineTilt = null;
       appState.motion.lastTriggerAt = 0;
+    } else {
+      void maybeAutoEnableMotion();
     }
     updateMotionStatusText();
     persistGameState();
@@ -424,7 +486,18 @@ function attachEventHandlers() {
     dom.soundStatus.textContent = played
       ? "Sound status: played ding + err."
       : "Sound status: audio context not running.";
+    updateSoundUnlockPrompt();
   });
+
+  if (dom.unlockSound) {
+    dom.unlockSound.addEventListener("click", async () => {
+      const unlocked = await primeAudio();
+      dom.soundStatus.textContent = unlocked
+        ? "Sound status: unlocked."
+        : "Sound status: blocked. Tap again or disable silent mode.";
+      updateSoundUnlockPrompt();
+    });
+  }
 
   dom.enableMotion.addEventListener("click", async () => {
     await primeAudio();
@@ -447,23 +520,37 @@ function attachEventHandlers() {
   });
 
   dom.resetLeaderboard.addEventListener("click", () => {
+    const confirmed = window.confirm("Reset session leaderboard? This cannot be undone.");
+    if (!confirmed) {
+      return;
+    }
     resetLeaderboard();
   });
 
   dom.nextPlayer.addEventListener("click", () => {
-    appState.pendingPlayAgain = null;
     renderScreen("setup");
-    dom.playerName.value = "";
+    renderSessionPlayers();
+    dom.validationMessage.textContent = "";
     dom.playerName.focus();
     persistGameState();
   });
 
   dom.playAgain.addEventListener("click", async () => {
     await primeAudio();
+    if (appState.session.winnerName) {
+      resetLeaderboard();
+      renderScreen("setup");
+      dom.playerName.value = "";
+      renderSessionPlayers();
+      dom.playerName.focus();
+      persistGameState();
+      return;
+    }
     const replayName = appState.pendingPlayAgain;
     const filteredPool = getFilteredPokemonPool();
     if (!replayName) {
       renderScreen("setup");
+      renderSessionPlayers();
       return;
     }
     if (!appState.settings.selectedGenerations.size) {
@@ -488,6 +575,36 @@ function attachEventHandlers() {
   dom.playerName.addEventListener("input", () => {
     persistGameState();
   });
+
+  dom.addPlayerButton.addEventListener("click", () => {
+    const added = addPlayerToSession(dom.playerName.value);
+    if (!added) {
+      return;
+    }
+    dom.playerName.value = "";
+    dom.validationMessage.textContent = "";
+    persistGameState();
+  });
+
+  dom.playerName.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+    event.preventDefault();
+    const added = addPlayerToSession(dom.playerName.value);
+    if (!added) {
+      return;
+    }
+    dom.playerName.value = "";
+    dom.validationMessage.textContent = "";
+    persistGameState();
+  });
+
+  if (dom.resumeTouch) {
+    dom.resumeTouch.addEventListener("click", async () => {
+      await requestResumeFromPause();
+    });
+  }
 
   dom.pokemonCard.addEventListener("touchstart", (event) => {
     if (!appState.round.active || event.touches.length === 0) {
@@ -537,6 +654,14 @@ function attachEventHandlers() {
 
   window.addEventListener("resize", updateOrientationGuard);
   window.addEventListener("orientationchange", updateOrientationGuard);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      pauseRoundForInterruption("Game paused while screen was locked. Touch to resume.");
+    }
+  });
+  window.addEventListener("pagehide", () => {
+    pauseRoundForInterruption("Game paused while screen was locked. Touch to resume.");
+  });
 }
 
 function clampRoundSeconds(rawValue) {
@@ -545,6 +670,14 @@ function clampRoundSeconds(rawValue) {
     return 60;
   }
   return Math.min(300, Math.max(15, parsed));
+}
+
+function clampTargetPoints(rawValue) {
+  const parsed = Number.parseInt(rawValue, 10);
+  if (Number.isNaN(parsed)) {
+    return 10;
+  }
+  return Math.min(500, Math.max(1, parsed));
 }
 
 function clampMotionSensitivity(rawValue) {
@@ -612,6 +745,7 @@ function getAudioContext() {
 async function primeAudio() {
   const audioContext = getAudioContext();
   if (!audioContext) {
+    appState.audio.unlocked = false;
     return false;
   }
   if (audioContext.state === "suspended") {
@@ -633,9 +767,11 @@ async function primeAudio() {
     playUnlockPulse(audioContext);
   }
   appState.audio.unlocked = audioContext.state === "running";
+  appState.audio.wasUnlocked = appState.audio.unlocked;
   if (appState.audio.unlocked) {
     removeAudioUnlockListeners();
   }
+  updateSoundUnlockPrompt();
   return appState.audio.unlocked;
 }
 
@@ -756,56 +892,32 @@ function getMenuTrack() {
 
   const track = new Audio(MENU_MUSIC_SRC);
   track.loop = true;
-  track.autoplay = true;
   track.preload = "auto";
   track.volume = 0.4;
   track.playsInline = true;
-  track.setAttribute("playsinline", "true");
-  track.setAttribute("webkit-playsinline", "true");
+  const restoreTime = appState.audio.menuRestoreTime;
+  if (Number.isFinite(restoreTime) && restoreTime > 0) {
+    const applyRestoreTime = () => {
+      try {
+        track.currentTime = restoreTime;
+      } catch (_error) {
+        // Ignore invalid seek attempts.
+      }
+    };
+    track.addEventListener("loadedmetadata", applyRestoreTime, { once: true });
+    applyRestoreTime();
+  }
   appState.audio.menuTrack = track;
   return track;
 }
 
-function startMenuMusicRetryLoop() {
-  if (appState.audio.menuRetryTimer) {
-    return;
-  }
-  appState.audio.menuRetryTimer = window.setInterval(() => {
-    if (!appState.settings.menuMusicEnabled || !isMenuScreen(appState.currentScreen)) {
-      stopMenuMusicRetryLoop();
-      return;
-    }
-    const track = getMenuTrack();
-    if (!track.paused) {
-      stopMenuMusicRetryLoop();
-      return;
-    }
-    const playPromise = track.play();
-    if (playPromise && typeof playPromise.catch === "function") {
-      playPromise.catch(() => {
-        // Keep retrying; browser may eventually allow playback.
-      });
-    }
-  }, 1200);
-}
-
-function stopMenuMusicRetryLoop() {
-  if (!appState.audio.menuRetryTimer) {
-    return;
-  }
-  clearInterval(appState.audio.menuRetryTimer);
-  appState.audio.menuRetryTimer = null;
-}
-
 function startMenuMusic() {
   if (!appState.settings.menuMusicEnabled || !isMenuScreen(appState.currentScreen)) {
-    stopMenuMusicRetryLoop();
     return;
   }
 
   const track = getMenuTrack();
   if (!track.paused) {
-    stopMenuMusicRetryLoop();
     return;
   }
 
@@ -813,19 +925,30 @@ function startMenuMusic() {
   if (playPromise && typeof playPromise.catch === "function") {
     playPromise.catch(() => {
       // Playback can be blocked until user gesture on Safari/iOS.
-      startMenuMusicRetryLoop();
     });
   }
+  appState.audio.resumeMenuOnLoad = true;
 }
 
-function stopMenuMusic() {
-  stopMenuMusicRetryLoop();
+function stopMenuMusic(options = {}) {
+  const { resetPosition = true, markPaused = true } = options;
   const track = appState.audio.menuTrack;
   if (!track) {
+    if (markPaused) {
+      appState.audio.resumeMenuOnLoad = false;
+    }
     return;
   }
+
+  appState.audio.menuRestoreTime = Number.isFinite(track.currentTime) ? track.currentTime : 0;
   track.pause();
-  track.currentTime = 0;
+  if (resetPosition) {
+    track.currentTime = 0;
+    appState.audio.menuRestoreTime = 0;
+  }
+  if (markPaused) {
+    appState.audio.resumeMenuOnLoad = false;
+  }
 }
 
 function updateMenuMusicState() {
@@ -838,6 +961,25 @@ function updateMenuMusicState() {
 
 function isMenuScreen(screen) {
   return screen === "setup" || screen === "settings";
+}
+
+function isAudioReadyForSfx() {
+  const audioContext = appState.audio.context;
+  if (!audioContext) {
+    return false;
+  }
+  return audioContext.state === "running";
+}
+
+function updateSoundUnlockPrompt() {
+  if (!dom.unlockSound) {
+    return;
+  }
+  const shouldShow =
+    appState.currentScreen === "gameplay" &&
+    appState.settings.sfxEnabled &&
+    !isAudioReadyForSfx();
+  dom.unlockSound.classList.toggle("hidden", !shouldShow);
 }
 
 function playTestSoundSequence(force = false) {
@@ -869,6 +1011,68 @@ function detectMotionSupport() {
     appState.motion.permissionState = "granted";
     attachMotionListener();
   }
+}
+
+async function maybeAutoEnableMotion() {
+  if (!appState.settings.motionEnabled) {
+    return;
+  }
+  if (!appState.motion.secureContext || !appState.motion.supported) {
+    updateMotionStatusText();
+    return;
+  }
+  if (appState.motion.permissionState === "granted") {
+    attachMotionListener();
+    updateGameplayHints();
+    updateMotionStatusText();
+    return;
+  }
+
+  // iOS Safari requires a user gesture for requestPermission().
+  if (typeof window.DeviceOrientationEvent.requestPermission === "function") {
+    installAutoMotionRequestOnInteraction();
+    updateMotionStatusText();
+    return;
+  }
+
+  await ensureMotionAccess();
+  updateGameplayHints();
+}
+
+function installAutoMotionRequestOnInteraction() {
+  if (appState.motion.autoRequestArmed || !appState.settings.motionEnabled) {
+    return;
+  }
+
+  let consumed = false;
+  const handler = async () => {
+    if (consumed) {
+      return;
+    }
+    consumed = true;
+    removeAutoMotionRequestListeners();
+    await ensureMotionAccess();
+    updateGameplayHints();
+  };
+
+  appState.motion.autoRequestHandler = handler;
+  appState.motion.autoRequestArmed = true;
+  window.addEventListener("touchstart", handler, { passive: true, once: true });
+  window.addEventListener("pointerdown", handler, { once: true });
+  window.addEventListener("click", handler, { once: true });
+}
+
+function removeAutoMotionRequestListeners() {
+  const handler = appState.motion.autoRequestHandler;
+  if (!handler) {
+    appState.motion.autoRequestArmed = false;
+    return;
+  }
+  window.removeEventListener("touchstart", handler);
+  window.removeEventListener("pointerdown", handler);
+  window.removeEventListener("click", handler);
+  appState.motion.autoRequestHandler = null;
+  appState.motion.autoRequestArmed = false;
 }
 
 async function ensureMotionAccess() {
@@ -1066,7 +1270,9 @@ async function startRound(playerName, roundSeconds, filteredPool) {
   appState.round.playerName = playerName;
   appState.round.timeLeft = roundSeconds;
   appState.round.score = 0;
+  appState.round.totalScore = getPlayerTotal(playerName);
   appState.round.active = false;
+  appState.round.paused = false;
   appState.round.pool = filteredPool;
   appState.round.used = new Set();
   appState.round.deck = [];
@@ -1080,6 +1286,7 @@ async function startRound(playerName, roundSeconds, filteredPool) {
   dom.hudPlayer.textContent = playerName;
   dom.hudTime.textContent = String(roundSeconds);
   dom.hudScore.textContent = "0";
+  dom.hudTotal.textContent = String(appState.round.totalScore);
   dom.endRoundEarly.disabled = true;
   renderPokemonCard({ name: "Get Ready", generation: "Generation -" });
 
@@ -1112,10 +1319,14 @@ function startCountdown(seconds) {
 
 function beginGameplay() {
   appState.round.active = true;
+  appState.round.paused = false;
   appState.motion.baselineTilt = null;
   appState.motion.neutralReady = true;
   appState.motion.lastTriggerAt = 0;
   renderScreen("gameplay");
+  void primeAudio();
+  hideResumeGate();
+  updateSoundUnlockPrompt();
   dom.endRoundEarly.disabled = false;
   nextPokemon();
   dom.pokemonCard.focus();
@@ -1145,12 +1356,35 @@ function handleSwipe(direction) {
   }
 
   appState.swipeLocked = true;
+  const soundDirection = direction;
+  let reachedTarget = false;
   if (direction === "down") {
     appState.round.score += 1;
+    appState.round.totalScore += 1;
+    if (appState.round.timeLeft < 30) {
+      appState.round.timeLeft = 30;
+      dom.hudTime.textContent = "30";
+    }
     dom.hudScore.textContent = String(appState.round.score);
-    playCorrectSound();
-  } else {
+    dom.hudTotal.textContent = String(appState.round.totalScore);
+    reachedTarget = appState.round.totalScore >= appState.settings.targetPoints;
+  }
+
+  void primeAudio().then(() => {
+    if (soundDirection === "down") {
+      playCorrectSound();
+      return;
+    }
     playSkipSound();
+  });
+
+  if (reachedTarget) {
+    persistGameState();
+    setTimeout(() => {
+      appState.swipeLocked = false;
+      endRound();
+    }, 100);
+    return;
   }
 
   nextPokemon();
@@ -1184,22 +1418,44 @@ function nextPokemon() {
 }
 
 function endRound() {
-  if (!appState.round.active) {
+  if (!appState.round.active && !appState.round.paused) {
     return;
   }
 
   appState.round.active = false;
+  appState.round.paused = false;
   dom.endRoundEarly.disabled = true;
   clearRoundTimers();
+  hideResumeGate();
   updateLeaderboard({
     playerName: appState.round.playerName,
     score: appState.round.score,
     playedAt: Date.now()
   });
 
-  appState.pendingPlayAgain = appState.round.playerName;
-  dom.resultPlayer.textContent = appState.round.playerName;
+  const playerTotal = getPlayerTotal(appState.round.playerName);
+  const target = appState.settings.targetPoints;
+  dom.resultTargetPoints.textContent = String(target);
+  dom.resultTotalScore.textContent = String(playerTotal);
   dom.resultScore.textContent = String(appState.round.score);
+  if (playerTotal >= target) {
+    appState.session.winnerName = appState.round.playerName;
+    appState.pendingPlayAgain = null;
+    dom.resultPlayer.textContent = `${appState.round.playerName} wins!`;
+    dom.resultStatus.textContent = `Reached ${playerTotal}/${target} total points.`;
+    dom.playAgain.textContent = "New Game";
+    dom.nextPlayer.textContent = "Back to Setup";
+  } else {
+    const nextPlayer = getNextPlayerInRotation(appState.round.playerName);
+    appState.pendingPlayAgain = nextPlayer;
+    dom.resultPlayer.textContent = appState.round.playerName;
+    dom.resultStatus.textContent = nextPlayer
+      ? `Total: ${playerTotal}/${target}. Next up: ${nextPlayer}.`
+      : `Total: ${playerTotal}/${target}. Add another player to continue round robin.`;
+    dom.playAgain.textContent = nextPlayer ? `Start ${nextPlayer}` : "Back to Setup";
+    dom.nextPlayer.textContent = "Back to Setup";
+  }
+  renderSessionPlayers();
   renderScreen("result");
   persistGameState();
 }
@@ -1218,88 +1474,197 @@ function requestEarlyRoundEnd() {
 }
 
 function updateLeaderboard(entry) {
+  ensurePlayerInTurnOrder(entry.playerName);
   appState.session.leaderboard.push(entry);
+  recalculateWinnerFromTotals();
   renderLeaderboard();
   persistGameState();
 }
 
 function resetLeaderboard() {
   appState.session.leaderboard = [];
+  appState.session.winnerName = null;
+  appState.pendingPlayAgain = null;
+  renderSessionPlayers();
   renderLeaderboard();
   persistGameState();
 }
 
-function deleteLeaderboardEntry(entryToDelete) {
-  if (!entryToDelete) {
+function deleteLeaderboardEntry(playerName) {
+  if (!playerName) {
     return;
   }
 
-  const confirmed = window.confirm(
-    `Delete ${entryToDelete.playerName} (${entryToDelete.score} pts) from leaderboard?`
-  );
+  const confirmed = window.confirm(`Delete ${playerName} from leaderboard totals and turn order?`);
   if (!confirmed) {
     return;
   }
 
-  let index = appState.session.leaderboard.indexOf(entryToDelete);
-  if (index === -1) {
-    index = appState.session.leaderboard.findIndex(
-      (entry) =>
-        entry.playerName === entryToDelete.playerName &&
-        entry.score === entryToDelete.score &&
-        entry.playedAt === entryToDelete.playedAt
-    );
+  appState.session.leaderboard = appState.session.leaderboard.filter((entry) => entry.playerName !== playerName);
+  appState.session.turnOrder = appState.session.turnOrder.filter((name) => name !== playerName);
+  if (appState.pendingPlayAgain === playerName) {
+    appState.pendingPlayAgain = getNextPlayerForStart();
   }
-
-  if (index === -1) {
-    return;
-  }
-
-  appState.session.leaderboard.splice(index, 1);
+  recalculateWinnerFromTotals();
+  renderSessionPlayers();
   renderLeaderboard();
   persistGameState();
 }
 
 function renderLeaderboard() {
-  const sorted = [...appState.session.leaderboard].sort((a, b) => {
-    if (b.score !== a.score) {
-      return b.score - a.score;
+  const totals = getPlayerTotals();
+  const sorted = [...totals.entries()].sort((a, b) => {
+    if (b[1] !== a[1]) {
+      return b[1] - a[1];
     }
-    return a.playedAt - b.playedAt;
+    return a[0].localeCompare(b[0]);
   });
 
   dom.leaderboardList.innerHTML = "";
 
   if (!sorted.length) {
+    dom.leaderboardEmpty.textContent = `No rounds played yet. First to ${appState.settings.targetPoints} wins.`;
     dom.leaderboardEmpty.classList.remove("hidden");
     return;
   }
 
   dom.leaderboardEmpty.classList.add("hidden");
-  sorted.forEach((entry, index) => {
+  sorted.forEach(([playerName, total], index) => {
     const li = document.createElement("li");
     li.className = "leaderboard-item";
 
     const nameSpan = document.createElement("span");
-    nameSpan.textContent = `${index + 1}. ${entry.playerName}`;
+    const winnerTag = appState.session.winnerName === playerName ? " (Winner)" : "";
+    nameSpan.textContent = `${index + 1}. ${playerName}${winnerTag}`;
 
     const rightSide = document.createElement("div");
     rightSide.className = "leaderboard-actions";
 
     const scoreSpan = document.createElement("span");
-    scoreSpan.textContent = `${entry.score} pts`;
+    scoreSpan.textContent = `${total}/${appState.settings.targetPoints}`;
 
     const deleteButton = document.createElement("button");
     deleteButton.type = "button";
     deleteButton.className = "leaderboard-delete";
     deleteButton.textContent = "Delete";
     deleteButton.addEventListener("click", () => {
-      deleteLeaderboardEntry(entry);
+      deleteLeaderboardEntry(playerName);
     });
 
     rightSide.append(scoreSpan, deleteButton);
     li.append(nameSpan, rightSide);
     dom.leaderboardList.append(li);
+  });
+}
+
+function getPlayerTotals() {
+  const totals = new Map();
+  appState.session.leaderboard.forEach((entry) => {
+    const current = totals.get(entry.playerName) || 0;
+    totals.set(entry.playerName, current + Math.max(0, entry.score));
+  });
+  return totals;
+}
+
+function getPlayerTotal(playerName) {
+  if (!playerName) {
+    return 0;
+  }
+  return getPlayerTotals().get(playerName) || 0;
+}
+
+function ensurePlayerInTurnOrder(playerName) {
+  if (!playerName) {
+    return;
+  }
+  const exists = appState.session.turnOrder.some((name) => name.toLowerCase() === playerName.toLowerCase());
+  if (!exists) {
+    appState.session.turnOrder.push(playerName);
+  }
+}
+
+function getNextPlayerInRotation(currentPlayer) {
+  const order = appState.session.turnOrder;
+  if (!order.length) {
+    return null;
+  }
+  const currentIndex = order.indexOf(currentPlayer);
+  if (currentIndex === -1) {
+    return order[0];
+  }
+  return order[(currentIndex + 1) % order.length];
+}
+
+function getNextPlayerForStart() {
+  if (!appState.session.turnOrder.length) {
+    return null;
+  }
+  if (appState.pendingPlayAgain && appState.session.turnOrder.includes(appState.pendingPlayAgain)) {
+    return appState.pendingPlayAgain;
+  }
+  return appState.session.turnOrder[0];
+}
+
+function recalculateWinnerFromTotals() {
+  const target = appState.settings.targetPoints;
+  const totals = getPlayerTotals();
+  const orderedCandidates = appState.session.turnOrder.length
+    ? appState.session.turnOrder
+    : [...totals.keys()];
+  const winner = orderedCandidates.find((name) => (totals.get(name) || 0) >= target) || null;
+  appState.session.winnerName = winner;
+}
+
+function addPlayerToSession(rawName) {
+  const trimmed = typeof rawName === "string" ? rawName.trim() : "";
+  if (!trimmed) {
+    dom.validationMessage.textContent = "Enter a player name to add.";
+    return false;
+  }
+
+  const existing = appState.session.turnOrder.find(
+    (name) => name.toLowerCase() === trimmed.toLowerCase()
+  );
+  if (existing) {
+    dom.validationMessage.textContent = `${existing} is already in this session.`;
+    return false;
+  }
+
+  appState.session.turnOrder.push(trimmed);
+  renderSessionPlayers();
+  renderLeaderboard();
+  return true;
+}
+
+function renderSessionPlayers() {
+  if (!dom.sessionPlayers || !dom.sessionPlayersEmpty) {
+    return;
+  }
+  dom.sessionPlayers.innerHTML = "";
+  if (!appState.session.turnOrder.length) {
+    dom.sessionPlayersEmpty.classList.remove("hidden");
+    return;
+  }
+
+  dom.sessionPlayersEmpty.classList.add("hidden");
+  appState.session.turnOrder.forEach((playerName, index) => {
+    const li = document.createElement("li");
+    li.className = "session-player-item";
+
+    const nextTag = appState.pendingPlayAgain === playerName ? " (Next)" : "";
+    li.textContent = `${index + 1}. ${playerName}${nextTag}`;
+
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "session-player-remove";
+    removeButton.textContent = "Remove";
+    removeButton.addEventListener("click", () => {
+      deleteLeaderboardEntry(playerName);
+      renderSessionPlayers();
+    });
+
+    li.append(removeButton);
+    dom.sessionPlayers.append(li);
   });
 }
 
@@ -1311,6 +1676,10 @@ function renderScreen(screen) {
 
   const inGameplay = screen === "gameplay";
   document.body.classList.toggle("gameplay-active", inGameplay);
+  if (!inGameplay) {
+    hideResumeGate();
+  }
+  updateSoundUnlockPrompt();
   updateMenuMusicState();
 }
 
@@ -1434,12 +1803,15 @@ function shuffle(list) {
 function clearRoundTimers() {
   clearInterval(appState.timerId);
   clearInterval(appState.countdownId);
+  clearInterval(appState.resumeCountdownId);
   appState.timerId = null;
   appState.countdownId = null;
+  appState.resumeCountdownId = null;
 }
 
 function resetSettingsToDefaults() {
   appState.settings.roundSeconds = 60;
+  appState.settings.targetPoints = 10;
   appState.settings.selectedGenerations = new Set([1, 2]);
   appState.settings.motionEnabled = true;
   appState.settings.motionSensitivity = MOTION_SENSITIVITY_DEFAULT;
@@ -1458,6 +1830,7 @@ function resetSettingsToDefaults() {
   syncGenerationSelectionFromInputs();
   updateMotionStatusText();
   updateGameplayHints();
+  renderLeaderboard();
   updateMenuMusicState();
   persistGameState();
 }
@@ -1492,6 +1865,7 @@ async function requestPortraitLock() {
 
 function applySettingsToInputs() {
   dom.roundSeconds.value = String(clampRoundSeconds(appState.settings.roundSeconds));
+  dom.targetPoints.value = String(clampTargetPoints(appState.settings.targetPoints));
   const selected = appState.settings.selectedGenerations;
   dom.generationInputs.forEach((input) => {
     input.checked = selected.has(Number.parseInt(input.value, 10));
@@ -1503,15 +1877,29 @@ function applySettingsToInputs() {
 }
 
 function restoreSavedView() {
-  if (appState.round.active && appState.round.timeLeft > 0 && appState.round.currentPokemon) {
+  if (
+    (appState.round.active || appState.round.paused) &&
+    appState.round.timeLeft > 0 &&
+    appState.round.currentPokemon
+  ) {
     dom.hudPlayer.textContent = appState.round.playerName || "-";
     dom.hudTime.textContent = String(appState.round.timeLeft);
     dom.hudScore.textContent = String(appState.round.score);
-    dom.endRoundEarly.disabled = false;
+    const liveTotal = Number.isFinite(appState.round.totalScore)
+      ? appState.round.totalScore
+      : getPlayerTotal(appState.round.playerName) + appState.round.score;
+    dom.hudTotal.textContent = String(liveTotal);
     renderPokemonCard(appState.round.currentPokemon);
     void updatePokemonTyping(appState.round.currentPokemon);
     renderScreen("gameplay");
-    startGameplayTimer();
+    if (appState.round.paused) {
+      dom.endRoundEarly.disabled = true;
+      showResumeGate("Game paused. Touch to resume.");
+    } else {
+      dom.endRoundEarly.disabled = false;
+      void primeAudio();
+      startGameplayTimer();
+    }
     return;
   }
 
@@ -1519,6 +1907,28 @@ function restoreSavedView() {
     dom.endRoundEarly.disabled = true;
     dom.resultPlayer.textContent = appState.round.playerName || appState.pendingPlayAgain;
     dom.resultScore.textContent = String(appState.round.score || 0);
+    const total = getPlayerTotal(appState.round.playerName || appState.pendingPlayAgain);
+    const target = appState.settings.targetPoints;
+    dom.resultTargetPoints.textContent = String(target);
+    dom.resultTotalScore.textContent = String(total);
+    dom.resultStatus.textContent = `Total: ${total}/${target}. Next up: ${appState.pendingPlayAgain}.`;
+    dom.playAgain.textContent = `Start ${appState.pendingPlayAgain}`;
+    dom.nextPlayer.textContent = "Back to Setup";
+    renderScreen("result");
+    return;
+  }
+
+  if (appState.currentScreen === "result" && appState.session.winnerName) {
+    dom.endRoundEarly.disabled = true;
+    const winner = appState.session.winnerName;
+    const total = getPlayerTotal(winner);
+    dom.resultPlayer.textContent = `${winner} wins!`;
+    dom.resultScore.textContent = String(appState.round.score || 0);
+    dom.resultTargetPoints.textContent = String(appState.settings.targetPoints);
+    dom.resultTotalScore.textContent = String(total);
+    dom.resultStatus.textContent = `Reached ${total}/${appState.settings.targetPoints} total points.`;
+    dom.playAgain.textContent = "New Game";
+    dom.nextPlayer.textContent = "Back to Setup";
     renderScreen("result");
     return;
   }
@@ -1542,12 +1952,14 @@ function loadPersistedState() {
     if (saved && typeof saved === "object") {
       if (saved.settings && typeof saved.settings === "object") {
         const roundSeconds = clampRoundSeconds(saved.settings.roundSeconds);
+        const targetPoints = clampTargetPoints(saved.settings.targetPoints);
         const selected = Array.isArray(saved.settings.selectedGenerations)
           ? saved.settings.selectedGenerations
               .map((value) => Number.parseInt(value, 10))
               .filter((value) => Number.isInteger(value) && value >= 1 && value <= 9)
           : [1, 2];
         appState.settings.roundSeconds = roundSeconds;
+        appState.settings.targetPoints = targetPoints;
         appState.settings.selectedGenerations = new Set(selected.length ? selected : [1, 2]);
         if (typeof saved.settings.motionEnabled === "boolean") {
           appState.settings.motionEnabled = saved.settings.motionEnabled;
@@ -1558,6 +1970,18 @@ function loadPersistedState() {
         }
         if (typeof saved.settings.menuMusicEnabled === "boolean") {
           appState.settings.menuMusicEnabled = saved.settings.menuMusicEnabled;
+        }
+      }
+
+      if (saved.audio && typeof saved.audio === "object") {
+        if (Number.isFinite(saved.audio.menuRestoreTime) && saved.audio.menuRestoreTime >= 0) {
+          appState.audio.menuRestoreTime = saved.audio.menuRestoreTime;
+        }
+        if (typeof saved.audio.resumeMenuOnLoad === "boolean") {
+          appState.audio.resumeMenuOnLoad = saved.audio.resumeMenuOnLoad;
+        }
+        if (typeof saved.audio.wasUnlocked === "boolean") {
+          appState.audio.wasUnlocked = saved.audio.wasUnlocked;
         }
       }
 
@@ -1575,6 +1999,18 @@ function loadPersistedState() {
             score: entry.score,
             playedAt: entry.playedAt
           }));
+        if (Array.isArray(saved.session.turnOrder)) {
+          appState.session.turnOrder = saved.session.turnOrder
+            .filter((name) => typeof name === "string" && name.trim())
+            .map((name) => name.trim());
+        } else {
+          appState.session.turnOrder = [...new Set(appState.session.leaderboard.map((entry) => entry.playerName))];
+        }
+        if (typeof saved.session.winnerName === "string" && saved.session.winnerName.trim()) {
+          appState.session.winnerName = saved.session.winnerName.trim();
+        } else {
+          appState.session.winnerName = null;
+        }
       }
 
       if (typeof saved.playerNameDraft === "string") {
@@ -1592,9 +2028,15 @@ function loadPersistedState() {
       if (saved.round && typeof saved.round === "object") {
         const parsedRound = deserializeRound(saved.round);
         if (parsedRound) {
+          // Always require manual resume after refresh/load.
+          if (parsedRound.active && parsedRound.timeLeft > 0 && parsedRound.currentPokemon) {
+            parsedRound.active = false;
+            parsedRound.paused = true;
+          }
           appState.round = parsedRound;
         }
       }
+      recalculateWinnerFromTotals();
     }
   } catch (_error) {
     // Ignore malformed local state and continue with defaults.
@@ -1606,14 +2048,28 @@ function persistGameState() {
     const stateToSave = {
       settings: {
         roundSeconds: appState.settings.roundSeconds,
+        targetPoints: appState.settings.targetPoints,
         selectedGenerations: [...appState.settings.selectedGenerations],
         motionEnabled: appState.settings.motionEnabled,
         motionSensitivity: appState.settings.motionSensitivity,
         sfxEnabled: appState.settings.sfxEnabled,
         menuMusicEnabled: appState.settings.menuMusicEnabled
       },
+      audio: {
+        menuRestoreTime: appState.audio.menuTrack
+          ? Number.isFinite(appState.audio.menuTrack.currentTime)
+            ? appState.audio.menuTrack.currentTime
+            : 0
+          : appState.audio.menuRestoreTime,
+        resumeMenuOnLoad: appState.audio.menuTrack
+          ? !appState.audio.menuTrack.paused
+          : appState.audio.resumeMenuOnLoad,
+        wasUnlocked: isAudioReadyForSfx()
+      },
       session: {
-        leaderboard: appState.session.leaderboard
+        leaderboard: appState.session.leaderboard,
+        turnOrder: appState.session.turnOrder,
+        winnerName: appState.session.winnerName
       },
       round: serializeRound(appState.round),
       pendingPlayAgain: appState.pendingPlayAgain,
@@ -1631,7 +2087,9 @@ function serializeRound(round) {
     playerName: round.playerName,
     timeLeft: round.timeLeft,
     score: round.score,
+    totalScore: round.totalScore,
     active: round.active,
+    paused: round.paused,
     deck: round.deck,
     pool: round.pool,
     used: [...round.used],
@@ -1655,12 +2113,121 @@ function deserializeRound(round) {
     playerName: typeof round.playerName === "string" ? round.playerName : "",
     timeLeft: Number.isFinite(round.timeLeft) ? Math.max(0, Math.floor(round.timeLeft)) : 60,
     score: Number.isFinite(round.score) ? Math.max(0, Math.floor(round.score)) : 0,
+    totalScore: Number.isFinite(round.totalScore) ? Math.max(0, Math.floor(round.totalScore)) : 0,
     active: Boolean(round.active),
+    paused: Boolean(round.paused),
     deck,
     pool,
     used: new Set(usedNames),
     currentPokemon
   };
+}
+
+function showResumeGate(message) {
+  if (!dom.resumeGate) {
+    return;
+  }
+  if (dom.screens.gameplay) {
+    dom.screens.gameplay.classList.add("resume-mode");
+  }
+  dom.resumeGate.classList.remove("hidden");
+  if (dom.resumeMessage) {
+    dom.resumeMessage.textContent = message || "Game paused. Touch to resume.";
+  }
+  if (dom.resumeTouch) {
+    dom.resumeTouch.disabled = false;
+    dom.resumeTouch.classList.remove("hidden");
+  }
+  if (dom.resumeCountdown) {
+    dom.resumeCountdown.classList.add("hidden");
+    dom.resumeCountdown.textContent = "Resuming in 3...";
+  }
+}
+
+function hideResumeGate() {
+  if (dom.screens.gameplay) {
+    dom.screens.gameplay.classList.remove("resume-mode");
+  }
+  if (!dom.resumeGate) {
+    return;
+  }
+  dom.resumeGate.classList.add("hidden");
+  if (dom.resumeTouch) {
+    dom.resumeTouch.disabled = false;
+    dom.resumeTouch.classList.remove("hidden");
+  }
+  if (dom.resumeCountdown) {
+    dom.resumeCountdown.classList.add("hidden");
+    dom.resumeCountdown.textContent = "Resuming in 3...";
+  }
+  clearInterval(appState.resumeCountdownId);
+  appState.resumeCountdownId = null;
+}
+
+function pauseRoundForInterruption(message) {
+  if (!appState.round.active) {
+    return;
+  }
+  appState.round.active = false;
+  appState.round.paused = true;
+  clearInterval(appState.timerId);
+  appState.timerId = null;
+  dom.endRoundEarly.disabled = true;
+  if (appState.currentScreen === "gameplay") {
+    showResumeGate(message);
+  }
+  persistGameState();
+}
+
+async function requestResumeFromPause() {
+  if (!appState.round.paused || appState.round.timeLeft <= 0 || appState.currentScreen !== "gameplay") {
+    hideResumeGate();
+    return;
+  }
+
+  await primeAudio();
+  if (dom.resumeTouch) {
+    dom.resumeTouch.disabled = true;
+    dom.resumeTouch.classList.add("hidden");
+  }
+  if (dom.resumeCountdown) {
+    dom.resumeCountdown.classList.remove("hidden");
+    dom.resumeCountdown.textContent = "Resuming in 3...";
+  }
+
+  clearInterval(appState.resumeCountdownId);
+  let remaining = 3;
+  appState.resumeCountdownId = setInterval(() => {
+    remaining -= 1;
+    if (remaining > 0) {
+      if (dom.resumeCountdown) {
+        dom.resumeCountdown.textContent = `Resuming in ${remaining}...`;
+      }
+      return;
+    }
+
+    clearInterval(appState.resumeCountdownId);
+    appState.resumeCountdownId = null;
+    if (dom.resumeCountdown) {
+      dom.resumeCountdown.textContent = "Go!";
+    }
+    window.setTimeout(() => {
+      if (!appState.round.paused || appState.round.timeLeft <= 0 || appState.currentScreen !== "gameplay") {
+        hideResumeGate();
+        return;
+      }
+      appState.round.paused = false;
+      appState.round.active = true;
+      appState.motion.baselineTilt = null;
+      appState.motion.neutralReady = true;
+      appState.motion.lastTriggerAt = 0;
+      dom.endRoundEarly.disabled = false;
+      hideResumeGate();
+      startGameplayTimer();
+      dom.pokemonCard.focus();
+      persistGameState();
+    }, 320);
+  }, 1000);
 }
 
 function isPokemonRecord(value) {
@@ -1673,8 +2240,12 @@ function isPokemonRecord(value) {
 }
 
 window.addEventListener("beforeunload", () => {
+  if (appState.round.active) {
+    appState.round.active = false;
+    appState.round.paused = true;
+  }
   persistGameState();
-  stopMenuMusic();
+  stopMenuMusic({ resetPosition: false, markPaused: false });
   clearRoundTimers();
 });
 
